@@ -1,8 +1,8 @@
-# crt.name clone
+# Open Subdomain Search
 
 Passive CT subdomain index — SvelteKit frontend + Go backend (SQLite). Give it `example.com`, get every subdomain + first-seen.
 
-Original: https://crt.name
+Original: <https://crt.name>
 
 > [!INFO]
 > DISCLAIMER:

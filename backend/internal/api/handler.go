@@ -4,25 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"ctindex/internal/loglist"
 	"ctindex/internal/norm"
 	"ctindex/internal/ratelimit"
 	"ctindex/internal/store"
 )
 
 type Server struct {
-	store   *store.Store
-	limiter *ratelimit.Limiter
-	token   string // if set, protects find/top/stream
+	store    *store.Store
+	limiter  *ratelimit.Limiter
+	token    string // if set, protects find/top/stream
+	logsYAML string
 }
 
 func New(s *store.Store, limiter *ratelimit.Limiter, token string) *Server {
 	return &Server{store: s, limiter: limiter, token: token}
+}
+
+func NewWithLogs(s *store.Store, limiter *ratelimit.Limiter, token, logsYAML string) *Server {
+	return &Server{store: s, limiter: limiter, token: token, logsYAML: logsYAML}
 }
 
 func (srv *Server) Routes() http.Handler {
@@ -30,6 +37,7 @@ func (srv *Server) Routes() http.Handler {
 	// Public search with rate limit middleware
 	mux.Handle("/v1/search", srv.limiter.Middleware(http.HandlerFunc(srv.handleSearch)))
 	mux.Handle("/v1/stats", http.HandlerFunc(srv.handleStats))
+	mux.Handle("/v1/progress", http.HandlerFunc(srv.handleProgress))
 	mux.Handle("/v1/find", http.HandlerFunc(srv.handleFind))
 	mux.Handle("/v1/top", http.HandlerFunc(srv.handleTop))
 	mux.Handle("/v1/stream", http.HandlerFunc(srv.handleStream))
@@ -56,6 +64,133 @@ func corsMiddleware(next http.Handler) http.Handler {
 func (srv *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (srv *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// total indexed
+	total, _ := srv.store.CountAll(ctx)
+	// log_state rows
+	rows, err := srv.store.DB().QueryContext(ctx, `SELECT log_name, next_index, updated_at FROM log_state`)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	type logProg struct {
+		Name           string  `json:"name"`
+		NextIndex      int64   `json:"next_index"`
+		UpdatedAt      string  `json:"updated_at"`
+		CheckpointSize *int64  `json:"checkpoint_size,omitempty"`
+		Percent        *float64 `json:"percent,omitempty"`
+		Behind         *int64  `json:"behind,omitempty"`
+		MonitoringURL  string  `json:"monitoring_url,omitempty"`
+	}
+	var logs []logProg
+	state := make(map[string]logProg)
+	for rows.Next() {
+		var name string
+		var idx, updated int64
+		if err := rows.Scan(&name, &idx, &updated); err != nil {
+			continue
+		}
+		state[name] = logProg{Name: name, NextIndex: idx, UpdatedAt: time.UnixMilli(updated).UTC().Format(time.RFC3339)}
+	}
+	// try to enrich with curated logs.yaml if available
+	var curated *loglist.Curated
+	if srv.logsYAML != "" {
+		if c, err := loglist.LoadCurated(srv.logsYAML); err == nil {
+			curated = c
+		} else if c, err := loglist.LoadCurated("backend/" + srv.logsYAML); err == nil {
+			curated = c
+		}
+	}
+	// fetch checkpoint sizes with short timeout, best-effort
+	client := &http.Client{Timeout: 4 * time.Second}
+	for _, lp := range state {
+		entry := lp
+		// find monitoring URL if curated
+		var monURL string
+		if curated != nil {
+			for _, e := range curated.StaticCT {
+				if e.Name == lp.Name {
+					monURL = e.MonitoringPrefix
+					break
+				}
+			}
+		}
+		entry.MonitoringURL = monURL
+		if monURL != "" {
+			// fetch checkpoint
+			if size, err := fetchCheckpointSize(r.Context(), client, monURL); err == nil {
+				entry.CheckpointSize = &size
+				pct := float64(entry.NextIndex) / float64(size) * 100
+				if pct > 100 {
+					pct = 100
+				}
+				entry.Percent = &pct
+				behind := size - entry.NextIndex
+				if behind < 0 {
+					behind = 0
+				}
+				entry.Behind = &behind
+			}
+		}
+		logs = append(logs, entry)
+	}
+	// include logs that are in curated but not yet in state (0%)
+	if curated != nil {
+		for _, e := range curated.StaticCT {
+			if _, ok := state[e.Name]; !ok {
+				ent := logProg{Name: e.Name, NextIndex: 0, UpdatedAt: time.Now().UTC().Format(time.RFC3339), MonitoringURL: e.MonitoringPrefix}
+				if size, err := fetchCheckpointSize(r.Context(), client, e.MonitoringPrefix); err == nil {
+					ent.CheckpointSize = &size
+					pct := 0.0
+					ent.Percent = &pct
+					ent.Behind = &size
+				}
+				logs = append(logs, ent)
+			}
+		}
+	}
+	if logs == nil {
+		logs = []logProg{}
+	}
+	resp := struct {
+		Subdomains int64     `json:"subdomains"`
+		Logs       []logProg `json:"logs"`
+	}{
+		Subdomains: total,
+		Logs:       logs,
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func fetchCheckpointSize(ctx context.Context, client *http.Client, monitoringPrefix string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", monitoringPrefix+"checkpoint", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "text/plain")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(string(b), "\n")
+	if len(lines) < 2 {
+		return 0, fmt.Errorf("malformed checkpoint")
+	}
+	return strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
 }
 
 func (srv *Server) handleStats(w http.ResponseWriter, r *http.Request) {

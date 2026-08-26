@@ -24,10 +24,10 @@ func New(s *store.Store, limiter *ratelimit.Limiter) *Handler {
 }
 
 type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
+	JSONRPC string           `json:"jsonrpc"`
 	ID      *json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
+	Method  string           `json:"method"`
+	Params  json.RawMessage  `json:"params"`
 }
 
 type rpcResponse struct {
@@ -47,14 +47,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// Rate limit: share bucket with /v1/search per IP (100/day)
-	ip := ratelimit.ClientIP(r)
-	remaining, limited := h.limiter.Allow(ip)
-	w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", h.limiter.Limit()))
-	w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
-	if limited {
-		http.Error(w, "rate limit exceeded: 100 requests per IP per day", http.StatusTooManyRequests)
-		return
+	// Rate limit: share bucket with /v1/search per IP (0=off)
+	remaining := 0
+	if h.limiter.Enabled() {
+		ip := ratelimit.ClientIP(r)
+		var limited bool
+		remaining, limited = h.limiter.Allow(ip)
+		w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", h.limiter.Limit()))
+		w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
+		if limited {
+			http.Error(w, fmt.Sprintf("rate limit exceeded: %d requests per IP per day", h.limiter.Limit()), http.StatusTooManyRequests)
+			return
+		}
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -100,11 +104,11 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req rpcRequest) {
 			"tools":   map[string]interface{}{"listChanged": true},
 		},
 		"serverInfo": map[string]interface{}{
-			"name":        "crt.name",
-			"title":       "crt.name subdomain index",
+			"name":        "open subdomain search",
+			"title":       "open subdomain search subdomain index",
 			"description": "Passive Certificate Transparency subdomain index. Free-tier search only (100 req/IP/day).",
 			"version":     "1.0.0",
-			"websiteUrl":  "https://crt.name/",
+			"websiteUrl":  "https://open-subdomain-search.local/",
 		},
 	}
 	writeRPCResult(w, req.ID, res)

@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"ctindex/internal/api"
+	"ctindex/internal/backfill"
 	"ctindex/internal/config"
 	"ctindex/internal/loglist"
 	"ctindex/internal/mcp"
 	"ctindex/internal/pipeline"
+	"ctindex/internal/prober"
 	"ctindex/internal/ratelimit"
 	"ctindex/internal/store"
 	"ctindex/internal/follower/staticct"
@@ -108,8 +110,68 @@ func main() {
 		}
 	}
 
-	// API server
-	apiSrv := api.New(st, limiter, cfg.Token)
+	// Backfill + prober workers (parallel to CT followers)
+	if cfg.EnableIngest {
+		// DNS prober — active, no key, default on (disable with ENABLE_DNS_PROBER=0)
+		if envEnabled("ENABLE_DNS_PROBER", true) {
+			pr := prober.New(st, pipe)
+			go func() {
+				if err := pr.Run(ctx); err != nil && err != context.Canceled {
+					slog.Error("dns prober exited", "err", err)
+				}
+			}()
+		}
+		// HaGeZi — public blocklist, default on (disable with ENABLE_HAGEZI=0)
+		if envEnabled("ENABLE_HAGEZI", true) {
+			hz := backfill.NewHaGeZi(pipe)
+			go func() {
+				if err := hz.Run(ctx); err != nil && err != context.Canceled {
+					slog.Error("hagezi exited", "err", err)
+				}
+			}()
+		}
+		// CZDS — watches data/czds/*.txt, default on if dir exists
+		if envEnabled("ENABLE_CZDS", true) {
+			cz := backfill.NewCZDS(pipe, "data/czds")
+			go func() {
+				if err := cz.Run(ctx); err != nil && err != context.Canceled {
+					slog.Error("czds exited", "err", err)
+				}
+			}()
+		}
+		// Common Crawl — watches data/commoncrawl/*.txt, default on
+		if envEnabled("ENABLE_COMMONCRAWL", true) {
+			cc := backfill.NewCommonCrawl(pipe, "data/commoncrawl")
+			go func() {
+				if err := cc.Run(ctx); err != nil && err != context.Canceled {
+					slog.Error("commoncrawl exited", "err", err)
+				}
+			}()
+		}
+		// Chaos — needs CHAOS_API_KEY, default off if no key
+		if envEnabled("ENABLE_CHAOS", false) || os.Getenv("CHAOS_API_KEY") != "" {
+			ch := backfill.NewChaos(pipe)
+			go func() {
+				if err := ch.Run(ctx); err != nil && err != context.Canceled {
+					slog.Error("chaos exited", "err", err)
+				}
+			}()
+		}
+		// Internet Archive retired CT replay — stub, enable via ENABLE_IA=1 and data/ia/*.jsonl
+		if envEnabled("ENABLE_IA", false) {
+			slog.Info("ia backfill enabled but not yet implemented (place jsonl in data/ia/)")
+		}
+	}
+
+	// API server - pass logs path for /v1/progress
+	logsPathForAPI := cfg.LogsYAML
+	// reuse resolved logsPath from follower section if available
+	if _, err := os.Stat(logsPathForAPI); err != nil {
+		if _, err2 := os.Stat("backend/" + logsPathForAPI); err2 == nil {
+			logsPathForAPI = "backend/" + logsPathForAPI
+		}
+	}
+	apiSrv := api.NewWithLogs(st, limiter, cfg.Token, logsPathForAPI)
 	mcpHandler := mcp.New(st, limiter)
 
 	mux := http.NewServeMux()
@@ -228,6 +290,15 @@ func seedDemo(st *store.Store) error {
 	// Insert
 	_, err := st.InsertBatchIgnore(ctx, rows)
 	return err
+}
+
+func envEnabled(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v != "0" && v != "false" && v != "no" && v != "off"
 }
 
 func normalize(s string) (apex, sub string, ok bool) {

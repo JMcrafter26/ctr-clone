@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -21,16 +22,19 @@ type bucket struct {
 }
 
 func New(limit int) *Limiter {
-	if limit <= 0 {
-		limit = 100
-	}
+	// 0 = disabled (no limiting) — self-host default. Do not coerce to 100.
 	return &Limiter{
 		limit:   limit,
 		buckets: make(map[string]*bucket),
 	}
 }
 
+func (l *Limiter) Enabled() bool { return l.limit > 0 }
+
 func (l *Limiter) Allow(ip string) (remaining int, limited bool) {
+	if l.limit <= 0 {
+		return 0, false
+	}
 	day := time.Now().UTC().Format("2006-01-02")
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -48,6 +52,9 @@ func (l *Limiter) Allow(ip string) (remaining int, limited bool) {
 }
 
 func (l *Limiter) Remaining(ip string) int {
+	if l.limit <= 0 {
+		return 0
+	}
 	day := time.Now().UTC().Format("2006-01-02")
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -62,7 +69,11 @@ func (l *Limiter) Limit() int { return l.limit }
 
 // Middleware wraps a handler with rate limiting and adds X-RateLimit headers.
 // Only counts successful allowance; if limited returns 429.
+// If limit <=0, limiting is disabled and request passes through with no headers.
 func (l *Limiter) Middleware(next http.Handler) http.Handler {
+	if l.limit <= 0 {
+		return next
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := ClientIP(r)
 		remaining, limited := l.Allow(ip)
@@ -71,7 +82,7 @@ func (l *Limiter) Middleware(next http.Handler) http.Handler {
 		if limited {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			http.Error(w, "rate limit exceeded: 100 requests per IP per day", http.StatusTooManyRequests)
+			http.Error(w, fmt.Sprintf("rate limit exceeded: %d requests per IP per day", l.limit), http.StatusTooManyRequests)
 			return
 		}
 		next.ServeHTTP(w, r)
