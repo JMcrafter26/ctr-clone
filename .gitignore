@@ -225,3 +225,8 @@ logs.yaml
 logs.yml
 
 research/
+
+
+*.OLD
+*.7z
+*.patch

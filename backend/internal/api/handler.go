@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"ctindex/internal/loglist"
 	"ctindex/internal/norm"
+	"ctindex/internal/pipeline"
 	"ctindex/internal/ratelimit"
 	"ctindex/internal/store"
 )
@@ -22,6 +25,7 @@ type Server struct {
 	limiter  *ratelimit.Limiter
 	token    string // if set, protects find/top/stream
 	logsYAML string
+	pipeline *pipeline.Pipeline
 }
 
 func New(s *store.Store, limiter *ratelimit.Limiter, token string) *Server {
@@ -31,6 +35,8 @@ func New(s *store.Store, limiter *ratelimit.Limiter, token string) *Server {
 func NewWithLogs(s *store.Store, limiter *ratelimit.Limiter, token, logsYAML string) *Server {
 	return &Server{store: s, limiter: limiter, token: token, logsYAML: logsYAML}
 }
+
+func (srv *Server) SetPipeline(p *pipeline.Pipeline) { srv.pipeline = p }
 
 func (srv *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
@@ -253,6 +259,10 @@ func (srv *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		slog.Error("search failed", "apex", apex, "err", err)
 		srv.writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
+	}
+	// on-demand: if not found and pipeline available, probe common names for this apex in background
+	if len(results) == 0 && srv.pipeline != nil && isOnDemandEnabled() {
+		go srv.probeApex(apex)
 	}
 
 	// Rate limit remaining for response (already consumed via middleware, so we fetch remaining)
@@ -487,5 +497,34 @@ func (srv *Server) RateLimitHeaders(ip string) (limit, remaining int) {
 }
 
 func (srv *Server) Store() *store.Store { return srv.store }
+
+func isOnDemandEnabled() bool {
+	v := os.Getenv("ENABLE_ONDEMAND")
+	if v == "" {
+		return true // on by default for self-host
+	}
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v != "0" && v != "false" && v != "no" && v != "off"
+}
+
+var onDemandNames = []string{"www", "mail", "api", "blog", "shop", "cdn", "dev", "staging", "test", "admin", "secure", "login", "assets", "m", "app", "portal", "support", "docs", "status", "vpn", "ns1", "ns2", "ftp", "smtp", "webmail", "autodiscover", "exchange", "git", "api2", "beta", "demo", "stage", "prod", "v1", "v2", "mobile", "preview", "sandbox", "uat", "qa", "preprod"}
+
+func (srv *Server) probeApex(apex string) {
+	// always ensure apex itself is indexed
+	srv.pipeline.Submit(pipeline.Entry{DNS: []string{apex}, Timestamp: time.Now().UnixMilli()})
+	for _, n := range onDemandNames {
+		fqdn := n + "." + apex
+		// quick check with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := net.DefaultResolver.LookupHost(ctx, fqdn)
+		cancel()
+		if err == nil {
+			srv.pipeline.Submit(pipeline.Entry{DNS: []string{fqdn}, Timestamp: time.Now().UnixMilli()})
+		}
+		// small delay to be polite to resolver 192.168.2.221
+		time.Sleep(30 * time.Millisecond)
+	}
+	slog.Info("on-demand probe done", "apex", apex)
+}
 
 var _ = context.Background

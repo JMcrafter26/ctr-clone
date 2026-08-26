@@ -172,6 +172,7 @@ func main() {
 		}
 	}
 	apiSrv := api.NewWithLogs(st, limiter, cfg.Token, logsPathForAPI)
+	apiSrv.SetPipeline(pipe)
 	mcpHandler := mcp.New(st, limiter)
 
 	mux := http.NewServeMux()
