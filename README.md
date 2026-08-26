@@ -4,6 +4,11 @@ Passive CT subdomain index — SvelteKit frontend + Go backend (SQLite). Give it
 
 Original: https://crt.name
 
+> [!INFO]
+> DISCLAIMER:
+> This project was researched and built with the assistance of AI.
+> It's not recommended to run it in production without investigating the security aspect first
+
 ## What you get
 
 - `GET /v1/search?apex=example.com` → one per line, `?format=json` → `[{"sub":"..."}]`, `&dates=1` → `sub<TAB>RFC3339` / `{"first_seen", "sub"}`, error strings byte-match upstream.

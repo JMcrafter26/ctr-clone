@@ -357,7 +357,7 @@
 				</div>
 
 				<!-- Live counter + feed -->
-				<div class="space-y-4">
+				<div class="space-y-4 min-w-0">
 					<Card.Root class="overflow-hidden border shadow-sm">
 						<Card.Header class="pb-2">
 							<Card.Description class="flex items-center gap-2 text-xs">
@@ -374,7 +374,7 @@
 								<ul id="feed" class="divide-y font-mono text-[12.5px] leading-5">
 									{#each recent as ev (ev.apex + '|' + ev.sub)}
 										<li class="flex items-center justify-between gap-2 px-3 py-1.5 hover:bg-muted/50">
-											<span class="host truncate">{ev.sub}</span>
+											<span class="host min-w-0 flex-1 truncate">{ev.sub}</span>
 											<span class="shrink-0 text-[11px] text-muted-foreground">{new Date(ev.first_seen).toLocaleDateString()}</span>
 										</li>
 									{/each}
