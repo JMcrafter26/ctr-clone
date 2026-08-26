@@ -108,7 +108,7 @@
 </script>
 
 <svelte:head>
-	<title>open subdomain search — self-hosted</title>
+	<title>Open Subdomain Search — self-hosted</title>
 	<meta name="description" content="Self-hosted subdomain index from CT. Search an apex, get subdomains + first seen." />
 	<meta name="theme-color" content="#09090b" id="theme-color" />
 	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -121,7 +121,7 @@
 
 	<header class="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
 		<div class="mx-auto flex h-12 max-w-[1100px] items-center justify-between px-6">
-			<a href="#top" class="font-mono text-xs font-medium tracking-tight">open subdomain search</a>
+			<a href="#top" class="font-mono text-xs font-medium tracking-tight">Open Subdomain Search</a>
 			<div class="flex items-center gap-3">
 				<span class="hidden items-center gap-2 font-mono text-xs text-muted-foreground sm:inline-flex">
 					<span class="size-1.5 animate-pulse rounded-full bg-primary"></span> self-hosted
@@ -288,7 +288,7 @@
 		</section>
 
 		<footer class="mt-16 flex items-center justify-between border-t py-6 font-mono text-xs text-muted-foreground">
-			<span>open subdomain search</span><span class="hidden sm:inline">self-hosted · open source · no ads</span><span>@melvinszc</span>
+			<span>Open Subdomain Search</span><span class="hidden sm:inline">self-hosted · open source · no ads</span><span>@Cufiy</span>
 		</footer>
 	</main>
 </div>
